@@ -1,0 +1,337 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>OCR + Grammar Checker</title>
+  </head>
+  <body style="margin:20px;">
+    <ocr-grammar-checker api-url="http://localhost:8000/api/analyze"></ocr-grammar-checker>
+
+    <script>
+      class OcrGrammarChecker extends HTMLElement {
+        static get observedAttributes() { return ["api-url"]; }
+
+        constructor() {
+          super();
+          this.attachShadow({ mode: "open" });
+          this.state = {
+            apiUrl: this.getAttribute("api-url") || "http://localhost:8000/api/analyze",
+            variant: "us",
+            file: null,
+            previewUrl: null,
+            loading: false,
+            result: null,
+          };
+
+          this.shadowRoot.innerHTML = `
+            <style>
+              :host { display:block; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial; color:#0f172a; }
+              .wrap { border:1px solid #e2e8f0; border-radius:14px; padding:16px; background:#fff; box-shadow:0 1px 2px rgba(15,23,42,.06);}
+              .header { display:flex; justify-content:space-between; gap:12px; margin-bottom:12px; }
+              .title { font-size:16px; font-weight:700; }
+              .subtitle { font-size:12px; color:#475569; margin-top:2px; }
+              .grid { display:grid; grid-template-columns: 1.2fr .8fr; gap:14px; }
+              @media (max-width:860px){ .grid{ grid-template-columns:1fr; } }
+              .card { border:1px solid #e2e8f0; border-radius:12px; padding:12px; }
+              label { font-size:12px; color:#334155; }
+              input[type=file] { width:100%; border:1px dashed #cbd5e1; border-radius:10px; padding:8px 10px; background:#f8fafc; }
+              select { border:1px solid #cbd5e1; border-radius:10px; padding:8px 10px; }
+              button { border:1px solid #cbd5e1; border-radius:10px; padding:9px 12px; font-weight:700; cursor:pointer; }
+              .primary { background:#0f172a; color:#fff; }
+              .secondary { background:#fff; color:#0f172a; }
+              .actions { display:flex; gap:10px; align-items:center; margin-top:10px; }
+              .hint { font-size:12px; color:#64748b; }
+              .error { margin-top:10px; border:1px solid #fecaca; background:#fff1f2; color:#9f1239; padding:10px; border-radius:10px; font-size:13px; display:none; }
+              .imgbox { border:1px solid #e2e8f0; background:#f8fafc; border-radius:12px; padding:10px; display:grid; place-items:center; min-height:180px; overflow:hidden; }
+              .imgbox img { max-width:100%; max-height:280px; border-radius:10px; }
+              .metrics { display:grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap:10px; }
+              @media (max-width:860px){ .metrics{ grid-template-columns:repeat(2,minmax(0,1fr)); } }
+              .metric { border:1px solid #e2e8f0; border-radius:12px; padding:10px; }
+              .k { font-size:11px; color:#64748b; text-transform:uppercase; letter-spacing:.8px; }
+              .v { font-size:18px; font-weight:800; margin-top:4px; }
+              .sectionTitle { margin:10px 0 6px; font-size:13px; font-weight:800; }
+              .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size:12.5px; line-height:1.45; white-space:pre-wrap; word-break:break-word; border:1px solid #e2e8f0; background:#f8fafc; border-radius:12px; padding:10px; }
+              .issues { display:grid; gap:8px; }
+              .issue { border:1px solid #e2e8f0; border-radius:12px; padding:10px; display:grid; gap:6px; }
+              .issueTop { display:flex; justify-content:space-between; align-items:center; gap:10px; }
+              .badge { font-size:11px; font-weight:900; padding:4px 8px; border-radius:999px; border:1px solid #e2e8f0; background:#f8fafc; }
+              .row { display:grid; grid-template-columns:140px 1fr; gap:10px; font-size:12.5px; }
+              @media (max-width:560px){ .row { grid-template-columns:1fr; } }
+              .key { color:#64748b; }
+              .red { color:#dc2626; } .orange { color:#f97316; } .yellow { color:#eab308; }
+              .left { display:flex; align-items:center; gap:8px; }
+              .icon { width:18px; height:18px; color: currentColor; }
+            </style>
+
+            <div class="wrap">
+              <div class="header">
+                <div>
+                  <div class="title">Image Text Verifier</div>
+                  <div class="subtitle">OCR + spelling/grammar/punctuation checks with business-friendly output</div>
+                </div>
+                <div class="hint" id="apiHint"></div>
+              </div>
+
+              <div class="grid">
+                <div class="card">
+                  <div style="display:grid; gap:10px;">
+                    <div>
+                      <label>Upload image</label>
+                      <input id="file" type="file" accept="image/*" />
+                    </div>
+                    <div>
+                      <label>English variant</label><br/>
+                      <select id="variant">
+                        <option value="us">US</option>
+                        <option value="uk">UK</option>
+                        <option value="both">Both</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  <div class="actions">
+                    <button id="analyze" class="primary">Analyze</button>
+                    <button id="reset" class="secondary" type="button">Reset</button>
+                    <div class="hint" id="status"></div>
+                  </div>
+
+                  <div id="err" class="error"></div>
+
+                  <div class="sectionTitle">Results</div>
+                  <div id="results"><div class="hint">Upload an image, then click <b>Analyze</b>.</div></div>
+                </div>
+
+                <div class="card">
+                  <div class="sectionTitle">Preview</div>
+                  <div class="imgbox" id="imgbox"><div class="hint">Upload an image to preview it here.</div></div>
+
+                  <div class="sectionTitle">Legend</div>
+                  <div class="hint">
+                    <span class="red">🔴 Typo/Spelling</span> •
+                    <span class="orange">🟠 Grammar</span> •
+                    <span class="yellow">🟡 Punctuation</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          `;
+
+          this.$ = (s) => this.shadowRoot.querySelector(s);
+          this.onFileChange = this.onFileChange.bind(this);
+          this.onAnalyze = this.onAnalyze.bind(this);
+          this.onReset = this.onReset.bind(this);
+        }
+
+        attributeChangedCallback(name, _, value) {
+          if (name === "api-url") {
+            this.state.apiUrl = value || "http://localhost:8000/api/analyze";
+            this.renderApiHint();
+          }
+        }
+
+        connectedCallback() {
+          this.$("#file").addEventListener("change", this.onFileChange);
+          this.$("#variant").addEventListener("change", (e) => (this.state.variant = e.target.value));
+          this.$("#analyze").addEventListener("click", this.onAnalyze);
+          this.$("#reset").addEventListener("click", this.onReset);
+          this.renderApiHint();
+          this.updateButtons();
+        }
+
+        renderApiHint() { this.$("#apiHint").textContent = `API: ${this.state.apiUrl}`; }
+
+        updateButtons() {
+          this.$("#analyze").disabled = this.state.loading || !this.state.file;
+          this.$("#status").textContent = this.state.loading ? "Analyzing…" : "";
+        }
+
+        showError(msg) {
+          const el = this.$("#err");
+          el.style.display = "block";
+          el.textContent = msg;
+        }
+
+        clearError() {
+          const el = this.$("#err");
+          el.style.display = "none";
+          el.textContent = "";
+        }
+
+        onFileChange(e) {
+          this.clearError();
+          this.state.file = e.target.files?.[0] || null;
+          this.state.result = null;
+
+          if (this.state.previewUrl) URL.revokeObjectURL(this.state.previewUrl);
+          this.state.previewUrl = this.state.file ? URL.createObjectURL(this.state.file) : null;
+
+          const box = this.$("#imgbox");
+          box.innerHTML = "";
+          if (this.state.previewUrl) {
+            const img = document.createElement("img");
+            img.src = this.state.previewUrl;
+            img.alt = "Uploaded preview";
+            box.appendChild(img);
+          } else {
+            box.innerHTML = `<div class="hint">Upload an image to preview it here.</div>`;
+          }
+
+          this.$("#results").innerHTML = `<div class="hint">Upload an image, then click <b>Analyze</b>.</div>`;
+          this.updateButtons();
+        }
+
+        iconSvg(colorClass) {
+          return `
+            <svg class="icon ${colorClass}" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path d="M12 3.2c.6 0 1.1.3 1.4.8l9 15.6c.3.5.3 1.1 0 1.6-.3.5-.8.8-1.4.8H3c-.6 0-1.1-.3-1.4-.8-.3-.5-.3-1.1 0-1.6l9-15.6c.3-.5.8-.8 1.4-.8Z" stroke="currentColor" stroke-width="1.7"/>
+              <path d="M12 9v5.2" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+              <path d="M12 17.6h.01" stroke="currentColor" stroke-width="3" stroke-linecap="round"/>
+            </svg>
+          `;
+        }
+
+        typeMeta(type) {
+          const t = (type || "").toLowerCase();
+          if (t === "spelling" || t === "typo") return { label: "Typo / Spelling", color: "red", emoji: "🔴" };
+          if (t === "grammar") return { label: "Grammar", color: "orange", emoji: "🟠" };
+          if (t === "punctuation") return { label: "Punctuation", color: "yellow", emoji: "🟡" };
+          return { label: "Issue", color: "yellow", emoji: "🟡" };
+        }
+
+        pct(v) {
+          if (v === null || v === undefined || Number.isNaN(Number(v))) return "—";
+          const n = Math.max(0, Math.min(100, Math.round(Number(v))));
+          return `${n}%`;
+        }
+
+        escapeHtml(str) {
+          return String(str)
+            .replaceAll("&", "&amp;")
+            .replaceAll("<", "&lt;")
+            .replaceAll(">", "&gt;")
+            .replaceAll('"', "&quot;")
+            .replaceAll("'", "&#039;");
+        }
+
+        renderResult(r) {
+          const counts = r.counts || {};
+          const lines = Array.isArray(r.extracted_lines) ? r.extracted_lines : [];
+          const uncertain = Array.isArray(r.uncertain) ? r.uncertain : [];
+          const issues = Array.isArray(r.issues) ? r.issues : [];
+
+          const extractedBlock = lines.length
+            ? lines.map((t, i) => `L${i + 1}: ${t ?? ""}`).join("\n")
+            : "No extracted text returned by API.";
+
+          const uncertainBlock = uncertain.length
+            ? uncertain.map(u => `- L${u.line ?? "?"}: "${u.text ?? "[unclear]"}"${u.note ? ` — ${u.note}` : ""}`).join("\n")
+            : "None";
+
+          const issuesHtml = issues.length
+            ? issues.map(it => {
+                const meta = this.typeMeta(it.type);
+                const sev = String(it.severity || "minor").toUpperCase() === "MAJOR" ? "MAJOR" : "MINOR";
+                return `
+                  <div class="issue">
+                    <div class="issueTop">
+                      <div class="left ${meta.color}">
+                        ${this.iconSvg(meta.color)}
+                        <div style="font-weight:900;">${meta.emoji} ${meta.label}</div>
+                      </div>
+                      <div class="badge">${sev}</div>
+                    </div>
+                    <div class="row"><div class="key">Location</div><div class="val">L${this.escapeHtml(String(it.line ?? "?"))}</div></div>
+                    <div class="row"><div class="key">Original</div><div class="val">${this.escapeHtml(it.original ?? "")}</div></div>
+                    <div class="row"><div class="key">Why</div><div class="val">${this.escapeHtml(it.why ?? "")}</div></div>
+                    <div class="row"><div class="key">Fix</div><div class="val">${this.escapeHtml(it.fix ?? "")}</div></div>
+                  </div>
+                `;
+              }).join("")
+            : `<div class="mono">No spelling or grammar errors detected.</div>`;
+
+          return `
+            <div class="metrics" style="margin-bottom:10px;">
+              <div class="metric"><div class="k">Accuracy score</div><div class="v">${this.pct(r.accuracy_score)}</div></div>
+              <div class="metric"><div class="k">OCR confidence</div><div class="v">${this.pct(r.ocr_confidence)}</div></div>
+              <div class="metric"><div class="k">Detection confidence</div><div class="v">${this.pct(r.detection_confidence)}</div></div>
+              <div class="metric">
+                <div class="k">Issues</div>
+                <div class="v">${counts.total ?? issues.length}</div>
+                <div class="hint">Major: ${counts.major ?? 0} • Minor: ${counts.minor ?? 0}</div>
+              </div>
+            </div>
+
+            <div class="sectionTitle">Extracted text</div>
+            <div class="mono">${this.escapeHtml(extractedBlock)}</div>
+
+            <div class="sectionTitle">Uncertain segments</div>
+            <div class="mono">${this.escapeHtml(uncertainBlock)}</div>
+
+            <div class="sectionTitle">Issues</div>
+            <div class="issues">${issuesHtml}</div>
+
+            <div class="sectionTitle" style="display:flex; align-items:center; justify-content:space-between;">
+              <span>Corrected text</span>
+              <button id="copy" class="secondary" type="button">Copy</button>
+            </div>
+            <div class="mono" id="corrected">${this.escapeHtml(r.corrected_text || "") || "No corrected text returned."}</div>
+          `;
+        }
+
+        async onAnalyze() {
+          this.clearError();
+          if (!this.state.file) return this.showError("Please upload an image first.");
+
+          this.state.loading = true;
+          this.updateButtons();
+
+          try {
+            const fd = new FormData();
+            fd.append("file", this.state.file);
+            fd.append("variant", this.state.variant);
+
+            const res = await fetch(this.state.apiUrl, { method: "POST", body: fd });
+            if (!res.ok) throw new Error(`API error (${res.status}). Check backend is running.`);
+
+            const data = await res.json();
+            this.state.result = data;
+
+            const resultsEl = this.$("#results");
+            resultsEl.innerHTML = this.renderResult(data);
+
+            this.$("#copy")?.addEventListener("click", async () => {
+              try {
+                await navigator.clipboard.writeText(data.corrected_text || "");
+                this.$("#status").textContent = "Copied!";
+                setTimeout(() => (this.$("#status").textContent = ""), 900);
+              } catch {
+                this.showError("Copy failed (browser permissions).\nYou can select and copy manually.");
+              }
+            });
+          } catch (e) {
+            this.showError(e?.message || "Something went wrong calling the API.");
+          } finally {
+            this.state.loading = false;
+            this.updateButtons();
+          }
+        }
+
+        onReset() {
+          this.clearError();
+          this.state.result = null;
+          this.state.file = null;
+          if (this.state.previewUrl) URL.revokeObjectURL(this.state.previewUrl);
+          this.state.previewUrl = null;
+
+          this.$("#file").value = "";
+          this.$("#imgbox").innerHTML = `<div class="hint">Upload an image to preview it here.</div>`;
+          this.$("#results").innerHTML = `<div class="hint">Upload an image, then click <b>Analyze</b>.</div>`;
+          this.updateButtons();
+        }
+      }
+
+      customElements.define("ocr-grammar-checker", OcrGrammarChecker);
+    </script>
+  </body>
+</html>
